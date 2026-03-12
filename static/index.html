@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick Share P2P</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        body { font-family: -apple-system, sans-serif; background: #f0f2f5; margin: 0; padding: 20px; text-align: center; }
+        .card { background: white; max-width: 500px; margin: 0 auto; padding: 20px; border-radius: 15px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+        h2 { margin-top: 0; color: #333; }
+        
+        /* Quick Share UI */
+        #radar { margin: 20px 0; padding: 15px; background: #eef2f5; border-radius: 10px; }
+        .peer-btn { display: inline-block; background: #fff; border: 2px solid #007bff; color: #007bff; padding: 15px 20px; margin: 5px; border-radius: 20px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .peer-btn:hover { background: #007bff; color: white; }
+        
+        /* Chat UI */
+        #chatInterface { display: none; text-align: left; margin-top: 20px; }
+        #chatBox { height: 300px; border: 1px solid #ddd; overflow-y: auto; padding: 10px; background: #fff; border-radius: 8px; margin-bottom: 10px; }
+        .message { margin: 8px 0; padding: 10px; border-radius: 10px; max-width: 85%; word-wrap: break-word; font-size: 14px; }
+        .me { background: #007bff; color: white; margin-left: auto; }
+        .them { background: #e9e9eb; color: #333; }
+        .chat-input-area { display: flex; gap: 5px; align-items: center; }
+        input[type="text"] { flex-grow: 1; padding: 10px; border: 1px solid #ddd; border-radius: 8px; }
+        button { padding: 10px 15px; border: none; border-radius: 8px; background: #007bff; color: white; font-weight: bold; cursor: pointer; }
+        img.chat-img { max-width: 100%; border-radius: 8px; margin-top: 5px; display: block; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>Quick Share</h2>
+    <p id="status" style="color: #666; font-weight: bold;">Looking for nearby devices...</p>
+
+    <div id="radar">
+        <p style="margin: 0 0 10px 0; font-size: 14px; color: #888;">Tap a device to connect</p>
+        <div id="peerList"></div>
+    </div>
+
+    <div id="chatInterface">
+        <div id="chatBox"></div>
+        <div class="chat-input-area">
+            <button id="btnFile" style="background:#6c757d;">📎</button>
+            <input type="file" id="chatFileIn" style="display:none">
+            <input type="text" id="msgInput" placeholder="Message...">
+            <button id="btnSend">Send</button>
+        </div>
+    </div>
+    
+    <br>
+    <button id="btnQRFallback" style="background: #28a745; font-size: 12px; margin-top: 20px;">Use Offline QR Method Instead</button>
+</div>
+
+<script>
+    // --- SOCKET.IO SETUP ---
+    const socket = io();
+    let myId = null;
+    let targetPeerId = null;
+
+    socket.on('your_id', (id) => { myId = id; });
+
+    socket.on('update_peers', (peers) => {
+        const listDiv = document.getElementById('peerList');
+        listDiv.innerHTML = '';
+        let foundOthers = false;
+
+        peers.forEach(peer => {
+            if (peer.id !== myId) {
+                foundOthers = true;
+                const btn = document.createElement('div');
+                btn.className = 'peer-btn';
+                btn.innerText = peer.name;
+                btn.onclick = () => initiateConnection(peer.id, peer.name);
+                listDiv.appendChild(btn);
+            }
+        });
+
+        if (!foundOthers) {
+            listDiv.innerHTML = '<span style="color:#aaa;">No other devices found on this network.</span>';
+        }
+    });
+
+    // --- WEBRTC SETUP ---
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    let dataChannel;
+    let fileBuffer = [];
+    let currentFileName = "";
+
+    const setStatus = (txt) => document.getElementById('status').innerText = txt;
+    const addMsg = (cls, txt) => {
+        const b = document.getElementById('chatBox');
+        b.innerHTML += `<div class="message ${cls}">${txt}</div>`;
+        b.scrollTop = b.scrollHeight;
+    };
+
+    function setupDataChannel(channel) {
+        channel.onopen = () => {
+            document.getElementById('radar').style.display = 'none';
+            document.getElementById('chatInterface').style.display = 'block';
+            setStatus("Connected & Ready to Share!");
+        };
+
+        channel.onmessage = (e) => {
+            try {
+                const msg = JSON.parse(e.data);
+                if (msg.type === 'f-start') {
+                    fileBuffer = [];
+                    currentFileName = msg.name;
+                    setStatus(`Receiving ${msg.name}...`);
+                } else if (msg.type === 'f-chunk') {
+                    fileBuffer.push(msg.data);
+                } else if (msg.type === 'f-end') {
+                    const fullData = fileBuffer.join('');
+                    if (fullData.startsWith('data:image')) {
+                        addMsg('them', `<b>${currentFileName}</b><img src="${fullData}" class="chat-img">`);
+                    } else {
+                        addMsg('them', `<a href="${fullData}" download="${currentFileName}" style="font-weight:bold;">💾 Download ${currentFileName}</a>`);
+                    }
+                    setStatus("File received!");
+                } else { addMsg('them', e.data); }
+            } catch (err) { addMsg('them', e.data); }
+        };
+    }
+
+    // --- SIGNALING LOGIC (The Magic Handshake) ---
+    
+    // 1. You click a device. Create an Offer and send it via Socket.IO
+    async function initiateConnection(peerId, peerName) {
+        targetPeerId = peerId;
+        setStatus(`Connecting to ${peerName}...`);
+        
+        dataChannel = pc.createDataChannel("chat");
+        setupDataChannel(dataChannel);
+        
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        socket.emit('webrtc_signal', { target: peerId, signal: { type: 'offer', sdp: offer } });
+    }
+
+    // 2. Handle incoming signals from the server
+    socket.on('webrtc_signal', async (data) => {
+        const signal = data.signal;
+        targetPeerId = data.sender_id;
+
+        if (signal.type === 'offer') {
+            setStatus(`Incoming connection from ${data.sender_name}...`);
+            pc.ondatachannel = (e) => { dataChannel = e.channel; setupDataChannel(dataChannel); };
+            
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            
+            socket.emit('webrtc_signal', { target: targetPeerId, signal: { type: 'answer', sdp: answer } });
+        } 
+        else if (signal.type === 'answer') {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+        } 
+        else if (signal.type === 'candidate') {
+            await pc.addIceCandidate(new RTCIceCandidate(signal.candidate));
+        }
+    });
+
+    // 3. Send Trickle ICE Candidates through Socket.IO automatically
+    pc.onicecandidate = (e) => {
+        if (e.candidate && targetPeerId) {
+            socket.emit('webrtc_signal', { target: targetPeerId, signal: { type: 'candidate', candidate: e.candidate } });
+        }
+    };
+
+    // --- CHAT & FILE SENDING ---
+    document.getElementById('btnSend').onclick = () => {
+        const i = document.getElementById('msgInput');
+        if (i.value && dataChannel.readyState === "open") {
+            dataChannel.send(i.value);
+            addMsg('me', i.value);
+            i.value = "";
+        }
+    };
+
+    document.getElementById('btnFile').onclick = () => document.getElementById('chatFileIn').click();
+    document.getElementById('chatFileIn').onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file || dataChannel.readyState !== "open") return;
+        
+        setStatus(`Sending ${file.name}...`);
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            const data = ev.target.result;
+            const size = 16384; 
+            dataChannel.send(JSON.stringify({ type: 'f-start', name: file.name }));
+            for (let i = 0; i < data.length; i += size) {
+                dataChannel.send(JSON.stringify({ type: 'f-chunk', data: data.slice(i, i + size) }));
+                if (dataChannel.bufferedAmount > 1000000) await new Promise(r => setTimeout(r, 60));
+            }
+            dataChannel.send(JSON.stringify({ type: 'f-end' }));
+            
+            if (data.startsWith('data:image')) { addMsg('me', `<b>${file.name}</b><img src="${data}" class="chat-img">`); } 
+            else { addMsg('me', `Sent: ${file.name}`); }
+            setStatus("File sent!");
+        };
+        reader.readAsDataURL(file);
+    };
+
+    // QR Fallback Button (just redirects to your static HTML file)
+    document.getElementById('btnQRFallback').onclick = () => {
+        window.location.href = "qr_fallback.html"; // Save your QR code HTML as this file!
+    };
+</script>
+</body>
+</html>
