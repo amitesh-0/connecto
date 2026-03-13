@@ -1,3 +1,4 @@
+from socket import socket
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -5,6 +6,21 @@ import json
 import os
 
 app = FastAPI()
+
+def get_local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Using a private network broadcast address works even offline/without internet
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        # Fallback if the above fails
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
 
 # Store active WebSocket connections
 class ConnectionManager:
@@ -33,6 +49,10 @@ async def get_frontend():
     html_path = os.path.join(os.path.dirname(__file__), "index.html")
     with open(html_path, "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
+    
+@app.get("/get-ip")
+async def get_ip():
+    return {"ip": get_local_ip(), "port": 8000}
 
 # The automatic signaling channel
 @app.websocket("/ws")
