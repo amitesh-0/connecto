@@ -49,21 +49,22 @@
     };
 
     // 1. WebRTC & WebSocket Setup
-    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+    const pc = new RTCPeerConnection({ iceServers: [] });
     let dataChannel;
     let fileBuffer = [];
     let currentFileName = "";
+    let pendingCandidates = []; // Queue for early ICE candidates
 
-    // Connect to the FastAPI WebSocket server automatically
+    // Connect to the FastAPI WebSocket server
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws`;
     const ws = new WebSocket(wsUrl);
 
-    // 2. Automatic Signaling Logic (No copy/pasting)
+    // 2. Automatic Signaling Logic with Race-Condition Fix
     ws.onmessage = async (event) => {
         const msg = JSON.parse(event.data);
 
-        // A new peer joined! If we are the host, we create the Offer automatically.
+        // A new peer joined! Host creates the Offer.
         if (msg.type === 'peer_joined') {
             setStatus("Peer found! Establishing direct connection...");
             dataChannel = pc.createDataChannel("quickshare");
@@ -74,23 +75,37 @@
             ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription }));
         }
         
-        // We received an Offer. We must Answer.
+        // Peer receives Offer
         else if (msg.type === 'offer') {
             setStatus("Accepting connection...");
             await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+
+            // Process any candidates that arrived too early
+            pendingCandidates.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
+            pendingCandidates = [];
         }
         
-        // We received an Answer. Connection complete.
+        // Host receives Answer
         else if (msg.type === 'answer') {
             await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+            
+            // Process any candidates that arrived too early
+            pendingCandidates.forEach(c => pc.addIceCandidate(new RTCIceCandidate(c)));
+            pendingCandidates = [];
         }
         
-        // We received an ICE network path. Add it.
+        // Receive ICE network path
         else if (msg.type === 'candidate') {
-            await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            // Only add the candidate if the remote description is ready. Otherwise, queue it.
+            if (pc.remoteDescription && pc.remoteDescription.type) {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            } else {
+                pendingCandidates.push(msg.candidate);
+            }
         }
     };
 
