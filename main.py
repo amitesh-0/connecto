@@ -1,4 +1,4 @@
-from socket import socket
+import socket
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
@@ -8,19 +8,21 @@ import os
 app = FastAPI()
 
 def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Using a private network broadcast address works even offline/without internet
-        s.connect(("10.255.255.255", 1))
+        # Best method: Forces the OS to find the interface used for actual network routing
+        s.connect(('8.8.8.8', 80))
         ip = s.getsockname()[0]
-        s.close()
-        return ip
     except Exception:
-        # Fallback if the above fails
         try:
-            return socket.gethostbyname(socket.gethostname())
+            # Fallback for completely offline LANs/Hotspots without internet access
+            s.connect(('192.168.255.255', 1))
+            ip = s.getsockname()[0]
         except Exception:
-            return "127.0.0.1"
+            ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
 
 # Store active WebSocket connections
 class ConnectionManager:
@@ -36,7 +38,7 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
 
     async def broadcast_to_others(self, message: str, sender: WebSocket):
-        # Send the WebRTC tokens to the *other* connected laptop
+        # Send the WebRTC tokens to the *other* connected laptop/device
         for connection in self.active_connections:
             if connection != sender:
                 await connection.send_text(message)
