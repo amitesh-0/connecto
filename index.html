@@ -279,18 +279,33 @@
                     else if (msg.type === 'f-end') {
                         const dlContainer = document.getElementById(currentDlMsgId);
                         
-                        if (useDiskStream) {
-                            // Wait for any remaining chunks to write, then close the disk stream safely
-                            await writeQueue; 
-                            await activeStream.close();
-                            activeStream = null;
-                            if (dlContainer) dlContainer.innerHTML = `<span style="color:#4af626; font-weight:bold;">[ SECURE FILE SAVED TO DISK ]: ${incomingFileInfo.name}</span>`;
+                        // --- INTEGRITY CHECK ---
+                        if (receivedBytes !== incomingFileInfo.size) {
+                            // CORRUPTION / DROPPED PACKETS DETECTED
+                            if (useDiskStream) {
+                                await writeQueue; 
+                                await activeStream.close();
+                                activeStream = null;
+                            }
+                            if (dlContainer) {
+                                dlContainer.innerHTML = `<span style="color:#ff3333; font-weight:bold;">[ ERROR: TRANSFER INCOMPLETE ]<br>Expected: ${incomingFileInfo.size} bytes<br>Received: ${receivedBytes} bytes<br>File corrupted. Please try again.</span>`;
+                            }
                         } else {
-                            // RAM Fallback: stitch the blobs and generate download link
-                            const blob = new Blob(receiveBuffer, { type: incomingFileInfo.fileType });
-                            const url = URL.createObjectURL(blob); 
-                            if (dlContainer) dlContainer.innerHTML = `<a href="${url}" download="${incomingFileInfo.name}" style="font-weight:bold;">[ CLICK TO SAVE FROM RAM ] ${incomingFileInfo.name}</a>`;
+                            // SUCCESS
+                            if (useDiskStream) {
+                                // Wait for any remaining chunks to write, then close the disk stream safely
+                                await writeQueue; 
+                                await activeStream.close();
+                                activeStream = null;
+                                if (dlContainer) dlContainer.innerHTML = `<span style="color:#4af626; font-weight:bold;">[ SECURE FILE SAVED TO DISK ]: ${incomingFileInfo.name} <br>INTEGRITY: SIZE VERIFIED (${incomingFileInfo.size} bytes)</span>`;
+                            } else {
+                                // RAM Fallback: stitch the blobs and generate download link
+                                const blob = new Blob(receiveBuffer, { type: incomingFileInfo.fileType });
+                                const url = URL.createObjectURL(blob); 
+                                if (dlContainer) dlContainer.innerHTML = `<a href="${url}" download="${incomingFileInfo.name}" style="font-weight:bold;">[ CLICK TO SAVE FROM RAM ] ${incomingFileInfo.name} <br>INTEGRITY: SIZE VERIFIED (${incomingFileInfo.size} bytes)</a>`;
+                            }
                         }
+                        
                         incomingFileInfo = null;
                     } 
                     else { addMsg('them', e.data); }

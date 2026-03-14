@@ -1,28 +1,22 @@
 import socket
+import os
+import json
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 import uvicorn
-import json
-import os
 
 app = FastAPI()
 
 def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    local_ip = "127.0.0.1" # Default fallback
     try:
-        # Best method: Forces the OS to find the interface used for actual network routing
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        try:
-            # Fallback for completely offline LANs/Hotspots without internet access
-            s.connect(('192.168.255.255', 1))
-            ip = s.getsockname()[0]
-        except Exception:
-            ip = '127.0.0.1'
-    finally:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        local_ip = s.getsockname()[0]
         s.close()
-    return ip
+    except Exception:
+        pass
+    return local_ip
 
 # Store active WebSocket connections
 class ConnectionManager:
@@ -54,25 +48,32 @@ async def get_frontend():
     
 @app.get("/get-ip")
 async def get_ip():
-    return {"ip": get_local_ip(), "port": 8000}
+    port = int(os.environ.get('PORT', 8000))
+    return {"ip": get_local_ip(), "port": port}
 
 # The automatic signaling channel
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
-        # If a second person joins, tell the first person to initiate the connection automatically
         if len(manager.active_connections) == 2:
             await manager.broadcast_to_others(json.dumps({"type": "peer_joined"}), websocket)
             
         while True:
-            # Listen for WebRTC data and pass it to the other laptop
             data = await websocket.receive_text()
             await manager.broadcast_to_others(data, websocket)
             
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-if __name__ == "__main__":
-    # Host on 0.0.0.0 so other devices on the hotspot/Wi-Fi can access it
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 8000))
+    print(f"Hawkins Network Signaling Server running on port {port}")
+    print(f"Access locally at: http://localhost:{port}")
+    
+    local_ip = get_local_ip()
+    if local_ip != "127.0.0.1":
+        print(f"Access on network at: http://{local_ip}:{port}")
+        
+    # Host on 0.0.0.0 so other devices on the LAN can access it
+    uvicorn.run(app, host="0.0.0.0", port=port)
